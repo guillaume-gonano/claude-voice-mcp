@@ -1,0 +1,29 @@
+{
+  "name": "claude-voice-mcp",
+  "version": "1.0.0",
+  "description": "Talk to Claude Code on your Mac from the Claude app voice mode, through a remote MCP connector.",
+  "scripts": {
+    "test": "node test.mjs",
+    "start": "node server.mjs"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "claude-code",
+    "voice",
+    "cloudflare-tunnel"
+  ],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "express": "^5.3.0",
+    "jose": "^6.2.13",
+    "zod": "^4.6.7"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

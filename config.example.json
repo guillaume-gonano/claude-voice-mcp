@@ -1,0 +1,7 @@
+{
+  "userName": "Alex",
+  "notesDir": "~/Documents/Voice notes",
+  "noteFrontmatter": { "tags": ["inbox", "voice"] },
+  "toolsHint": "their Obsidian vault, email, calendar, task manager and all their command-line tools",
+  "extraPrompt": ""
+}

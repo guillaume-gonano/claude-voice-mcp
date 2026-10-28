@@ -1,0 +1,95 @@
+// End-to-end test without Cloudflare: full OAuth flow, then the three tools with a fake Claude Code.
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { createApp, createOAuthProvider, createTaskRunner, resolveSettings, writeNote } from "./server.mjs";
+
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "voice-mcp-"));
+const fakeClaude = path.join(tmp, "claude");
+fs.writeFileSync(fakeClaude, `#!/bin/sh\nsleep "\${FAKE_SLEEP:-0}"\necho '{"type":"result","is_error":false,"result":"It is noon.","session_id":"sess-1"}'\n`, { mode: 0o755 });
+
+const port = 47861;
+const base = `http://127.0.0.1:${port}`;
+const provider = createOAuthProvider(path.join(tmp, "state.json"));
+let accessOk = false;
+const settings = resolveSettings({ notesDir: path.join(tmp, "Inbox"), noteFrontmatter: { type: "note", tags: ["inbox", "voice"] } });
+const app = createApp({ publicUrl: base, provider, verifyAccess: async () => accessOk, runner: createTaskRunner({ bin: fakeClaude }), settings });
+const httpServer = app.listen(port, "127.0.0.1");
+await new Promise((resolve) => httpServer.once("listening", resolve));
+
+try {
+  // MCP without a token → 401 with the OAuth metadata address.
+  const anonymous = await fetch(`${base}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  assert.equal(anonymous.status, 401);
+  assert.match(anonymous.headers.get("www-authenticate"), /oauth-protected-resource/);
+
+  // Registration refused outside the Claude redirect URIs.
+  const bad = await fetch(`${base}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: ["https://evil.example/cb"] }) });
+  assert.equal(bad.status, 400);
+
+  const redirectUri = "https://claude.ai/api/mcp/auth_callback";
+  const reg = await fetch(`${base}/register`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [redirectUri], token_endpoint_auth_method: "none", client_name: "test" }) });
+  assert.equal(reg.status, 201);
+  const client = await reg.json();
+
+  const verifier = crypto.randomBytes(32).toString("base64url");
+  const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
+  const authUrl = `${base}/authorize?${new URLSearchParams({ response_type: "code", client_id: client.client_id, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state: "xyz" })}`;
+
+  // Without a Cloudflare Access sign-in: refused.
+  assert.equal((await fetch(authUrl, { redirect: "manual" })).status, 403);
+  accessOk = true;
+  const authorized = await fetch(authUrl, { redirect: "manual" });
+  assert.equal(authorized.status, 302);
+  const location = new URL(authorized.headers.get("location"));
+  assert.equal(location.searchParams.get("state"), "xyz");
+
+  const tokenResponse = await fetch(`${base}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "authorization_code", code: location.searchParams.get("code"), code_verifier: verifier, client_id: client.client_id, redirect_uri: redirectUri }),
+  });
+  assert.equal(tokenResponse.status, 200);
+  const tokens = await tokenResponse.json();
+
+  const refreshed = await fetch(`${base}/token`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refresh_token, client_id: client.client_id }),
+  });
+  assert.equal(refreshed.status, 200);
+  const { access_token } = await refreshed.json();
+
+  const mcp = new Client({ name: "test", version: "1" });
+  await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${access_token}` } } }));
+  const { tools } = await mcp.listTools();
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["ask_claude_code", "get_task_result", "save_note"]);
+
+  const answer = await mcp.callTool({ name: "ask_claude_code", arguments: { request: "What time is it?" } });
+  assert.match(answer.content[0].text, /It is noon\.[\s\S]*sess-1/);
+
+  // Long task: "running" answer, then the result via get_task_result.
+  process.env.FAKE_SLEEP = "2";
+  const slowRunner = createTaskRunner({ bin: fakeClaude });
+  const slow = await slowRunner.wait(slowRunner.start("long"), 300);
+  assert.equal(slow.status, "running");
+  await slowRunner.wait(slow, 5000);
+  assert.equal(slow.status, "done");
+
+  const saved = await mcp.callTool({ name: "save_note", arguments: { text: "Client X wants to restart the campaign in January." } });
+  const file = saved.content[0].text.match(/Note saved in (.+)\.$/)[1];
+  assert.match(path.basename(file), /^\d{4}-\d{2}-\d{2}-\d{2}h\d{2}-client-x-wants-to-restart-the-campaign-in-january\.md$/);
+  const note = fs.readFileSync(file, "utf8");
+  assert.match(note, /^---\ntitle: Client X wants to restart the campaign in January\ndate: \d{4}-\d{2}-\d{2}\n/);
+  assert.match(note, /type: note\ntags: \[inbox, voice\]/);
+
+  await mcp.close();
+  console.log("OK: OAuth, Access guard, tools and note");
+} finally {
+  httpServer.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
