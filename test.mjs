@@ -1,4 +1,4 @@
-// End-to-end test without Cloudflare: full OAuth flow, then the three tools with a fake Claude Code.
+// End-to-end test without Cloudflare: full OAuth flow, then the tools with a fake Claude Code.
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createApp, createOAuthProvider, createTaskRunner, resolveSettings, writeNote } from "./server.mjs";
+import { createApp, createOAuthProvider, createTaskRunner, resolveSettings } from "./server.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "voice-mcp-"));
 const fakeClaude = path.join(tmp, "claude");
@@ -16,7 +16,7 @@ const port = 47861;
 const base = `http://127.0.0.1:${port}`;
 const provider = createOAuthProvider(path.join(tmp, "state.json"));
 let accessOk = false;
-const settings = resolveSettings({ notesDir: path.join(tmp, "Inbox"), noteFrontmatter: { type: "note", tags: ["inbox", "voice"] } });
+const settings = resolveSettings({ userName: "Alex" });
 const app = createApp({ publicUrl: base, provider, verifyAccess: async () => accessOk, runner: createTaskRunner({ bin: fakeClaude }), settings });
 const httpServer = app.listen(port, "127.0.0.1");
 await new Promise((resolve) => httpServer.once("listening", resolve));
@@ -67,7 +67,7 @@ try {
   const mcp = new Client({ name: "test", version: "1" });
   await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${access_token}` } } }));
   const { tools } = await mcp.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["ask_claude_code", "get_task_result", "save_note"]);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["ask_claude_code", "get_task_result"]);
 
   const answer = await mcp.callTool({ name: "ask_claude_code", arguments: { request: "What time is it?" } });
   assert.match(answer.content[0].text, /It is noon\.[\s\S]*sess-1/);
@@ -80,15 +80,8 @@ try {
   await slowRunner.wait(slow, 5000);
   assert.equal(slow.status, "done");
 
-  const saved = await mcp.callTool({ name: "save_note", arguments: { text: "Client X wants to restart the campaign in January." } });
-  const file = saved.content[0].text.match(/Note saved in (.+)\.$/)[1];
-  assert.match(path.basename(file), /^\d{4}-\d{2}-\d{2}-\d{2}h\d{2}-client-x-wants-to-restart-the-campaign-in-january\.md$/);
-  const note = fs.readFileSync(file, "utf8");
-  assert.match(note, /^---\ntitle: Client X wants to restart the campaign in January\ndate: \d{4}-\d{2}-\d{2}\n/);
-  assert.match(note, /type: note\ntags: \[inbox, voice\]/);
-
   await mcp.close();
-  console.log("OK: OAuth, Access guard, tools and note");
+  console.log("OK: OAuth, Access guard and tools");
 } finally {
   httpServer.close();
   fs.rmSync(tmp, { recursive: true, force: true });

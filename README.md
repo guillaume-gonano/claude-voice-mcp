@@ -5,7 +5,7 @@ Talk to **Claude Code on your Mac** while you drive, walk or cook, using the **v
 The Claude app's voice mode can only use remote connectors (MCP servers reachable by URL). This small server is such a connector: it hands each spoken request to Claude Code running headless on your Mac, which keeps access to everything it normally has (local files, notes, CLIs, MCP servers, skills), and sends back a short answer written to be read aloud.
 
 > "What's left on my to-do list for the client meeting tomorrow?"
-> "Note that the plumber comes Thursday at 9."
+> "Add a reminder to call the plumber on Thursday."
 > "Find the last invoice from Acme in my email and tell me the amount."
 
 ## How it works
@@ -27,7 +27,6 @@ Claude app (voice) ──HTTPS──▶ Cloudflare ──tunnel──▶ this se
 | --- | --- |
 | `ask_claude_code` | Hands a request to Claude Code and returns a short spoken-style answer. |
 | `get_task_result` | Fetches the result of a request that was still running. |
-| `save_note` | Saves a dictated Markdown note instantly (no agent, no model cost). |
 
 ## Requirements
 
@@ -67,8 +66,6 @@ Claude app (voice) ──HTTPS──▶ Cloudflare ──tunnel──▶ this se
 | Key | Meaning |
 | --- | --- |
 | `userName` | Your first name, used in the prompts. |
-| `notesDir` | Folder for `save_note` and long details (for example an Obsidian inbox). |
-| `noteFrontmatter` | Extra YAML fields added to every note. |
 | `toolsHint` | What Claude Code can reach on your Mac. The voice assistant reads it to decide when to call the tool. |
 | `extraPrompt` | Extra instructions appended to the voice system prompt (language, house rules). |
 
@@ -87,7 +84,7 @@ The connector uses several layers of protection:
 - **Only the Claude apps can register as clients.** Only the claude.ai and claude.com callback URLs are accepted; anything else is refused with 400.
 - **Tokens are issued only after your sign-in.** `/authorize` sits behind Cloudflare Access, limited to your email. The server also checks the Access JWT signature, audience and email itself.
 - **Tokens are stored as SHA-256 hashes** in `data/oauth-state.json` (mode 0600). Access tokens last 24 hours; refresh tokens last 90 days and rotate on each use.
-- **Three narrow tools**, with no direct shell access.
+- **Two narrow tools**, with no direct shell access.
 - **Claude Code's own guardrails stay on.** Auto permission mode applies, and the voice prompt forbids sending, publishing, deleting or paying unless you explicitly ask.
 
 Remaining risks you should accept knowingly:
@@ -110,7 +107,7 @@ launchctl bootout gui/$(id -u)/local.claude-voice-mcp-tunnel
 ## Development
 
 ```bash
-npm test   # OAuth flow, Access guard, tools and notes, with a fake Claude Code
+npm test   # OAuth flow, Access guard and tools, with a fake Claude Code
 ```
 
 ## License
