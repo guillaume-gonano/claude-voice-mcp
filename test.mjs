@@ -67,10 +67,31 @@ try {
   const mcp = new Client({ name: "test", version: "1" });
   await mcp.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp`), { requestInit: { headers: { authorization: `Bearer ${access_token}` } } }));
   const { tools } = await mcp.listTools();
-  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["ask_claude_code", "get_task_result"]);
+  assert.deepEqual(tools.map((tool) => tool.name).sort(), ["ask_claude_code", "ask_claude_code_parallel", "get_task_result"]);
 
   const answer = await mcp.callTool({ name: "ask_claude_code", arguments: { request: "What time is it?" } });
   assert.match(answer.content[0].text, /It is noon\.[\s\S]*sess-1/);
+
+  // Parallel requests really run at the same time: three 1 s tasks finish in well under 3 s.
+  process.env.FAKE_SLEEP = "1";
+  const t0 = Date.now();
+  const parallel = await mcp.callTool({ name: "ask_claude_code_parallel", arguments: { requests: ["one", "two", "three"] } });
+  assert.ok(Date.now() - t0 < 2500, "parallel tasks should overlap");
+  assert.match(parallel.content[0].text, /^3 of 3 tasks finished\./);
+  assert.equal(parallel.content[0].text.match(/It is noon\./g).length, 3);
+  process.env.FAKE_SLEEP = "0";
+
+  // Several running tasks: get_task_result returns as soon as one more finishes.
+  const multi = createTaskRunner({ bin: fakeClaude });
+  process.env.FAKE_SLEEP = "1";
+  const fast = multi.start("fast");
+  process.env.FAKE_SLEEP = "3";
+  const slowOne = multi.start("slow");
+  process.env.FAKE_SLEEP = "0";
+  const t1 = Date.now();
+  await multi.waitMany([fast, slowOne], { any: true });
+  assert.ok(Date.now() - t1 < 2500 && fast.status === "done" && slowOne.status === "running");
+  await slowOne.done;
 
   // Allowed tools are passed to Claude Code as permission rules.
   const argsFile = path.join(tmp, "args.txt");

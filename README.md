@@ -28,7 +28,8 @@ Claude app (voice) ──HTTPS──▶ tunnel (Cloudflare, Tailscale, ngrok…)
 | Tool | What it does |
 | --- | --- |
 | `ask_claude_code` | Hands a request to Claude Code and returns a short spoken-style answer. |
-| `get_task_result` | Fetches the result of a request that was still running. |
+| `ask_claude_code_parallel` | Starts 2 to 3 independent requests at the same time, each in its own Claude Code session. The Claude app runs tool calls one after the other, so this is the way to save time on multi-part questions. |
+| `get_task_result` | Fetches the results of requests still running. With several ids, it returns as soon as one more finishes, so the assistant can report answers as they arrive. |
 
 ## Requirements
 
@@ -107,7 +108,7 @@ The connector uses several layers of protection:
 - **Only the Claude apps can register as clients.** Only the claude.ai and claude.com callback URLs are accepted; anything else is refused with 400.
 - **Tokens are issued only after your sign-in.** With Cloudflare, `/authorize` sits behind Cloudflare Access, limited to your email, and the server also checks the Access JWT signature, audience and email itself. With another tunnel, `/authorize` asks for your password, and five wrong tries lock it for 15 minutes. Cloudflare Access is stronger: a password can leak or be guessed, so keep the generated one.
 - **Tokens are stored as SHA-256 hashes** in `data/oauth-state.json` (mode 0600). Access tokens last 24 hours; refresh tokens last 90 days and rotate on each use.
-- **Two narrow tools**, with no direct shell access.
+- **Three narrow tools**, with no direct shell access.
 - **Claude Code's own guardrails stay on.** Auto permission mode applies, and the voice prompt forbids sending, publishing, deleting or paying unless you explicitly ask.
 
 Remaining risks you should accept knowingly:

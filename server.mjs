@@ -240,7 +240,7 @@ export function createTaskRunner({ bin = CLAUDE_BIN, prompt = voicePrompt(resolv
     const args = ["-p", request, "--model", CLAUDE_MODEL, "--effort", CLAUDE_EFFORT, "--permission-mode", "auto", "--output-format", "json", "--append-system-prompt", prompt, ...extraArgs];
     if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
     if (sessionId) args.push("--resume", sessionId);
-    const task = { id: crypto.randomBytes(3).toString("hex"), status: "running", startedAt: Date.now() };
+    const task = { id: crypto.randomBytes(3).toString("hex"), status: "running", startedAt: Date.now(), request };
     const child = spawn(bin, args, { cwd: HOME, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
@@ -282,7 +282,17 @@ export function createTaskRunner({ bin = CLAUDE_BIN, prompt = voicePrompt(resolv
     return task;
   }
 
-  return { start, wait, get: (id) => tasks.get(id) };
+  // Waits until every task is done (all) or until at least one still-running task finishes (any), at most `ms`.
+  async function waitMany(list, { any = false, ms = WAIT_MS } = {}) {
+    const pending = list.filter((task) => task.status === "running").map((task) => task.done);
+    if (!pending.length) return list;
+    let timer;
+    await Promise.race([any ? Promise.race(pending) : Promise.all(pending), new Promise((resolve) => (timer = setTimeout(resolve, ms)))]);
+    clearTimeout(timer);
+    return list;
+  }
+
+  return { start, wait, waitMany, get: (id) => tasks.get(id), freeSlots: () => MAX_RUNNING - running().length };
 }
 
 function describe(task) {
@@ -292,6 +302,14 @@ function describe(task) {
   }
   const suite = task.sessionId ? `\n\n[session_id for a follow-up question: ${task.sessionId}]` : "";
   return `${task.status === "error" ? "Error: " : ""}${task.text}${suite}`;
+}
+
+function describeMany(list) {
+  const done = list.filter((task) => task.status !== "running").length;
+  const header = `${done} of ${list.length} tasks finished.`;
+  const blocks = list.map((task) => `Task ${task.id} (${task.request.slice(0, 60)}): ${describe(task)}`);
+  const next = done < list.length ? `\n\nCall get_task_result with the task_ids still running to get the next answers as they arrive.` : "";
+  return `${header}\n\n${blocks.join("\n\n")}${next}`;
 }
 
 // --- MCP tools ---
@@ -305,7 +323,7 @@ function createMcpServer(runner, settings) {
     "ask_claude_code",
     {
       title: `Ask Claude Code on ${owner}`,
-      description: `Hands a request to Claude Code running on ${owner}, which has access to ${settings.toolsHint}. Returns a short answer ready to be read aloud. Before calling, if the request sends, publishes, deletes or changes something, restate it to the user and wait for their consent. For a follow-up question, pass the session_id from the previous answer.`,
+      description: `Hands a request to Claude Code running on ${owner}, which has access to ${settings.toolsHint}. Returns a short answer ready to be read aloud. Before calling, if the request sends, publishes, deletes or changes something, restate it to the user and wait for their consent. For a follow-up question, pass the session_id from the previous answer. For several independent requests, use ask_claude_code_parallel instead.`,
       inputSchema: {
         request: z.string().min(1).describe("The complete request, with all useful context."),
         session_id: z.string().optional().describe("session_id from a previous answer, to continue the same conversation."),
@@ -315,16 +333,43 @@ function createMcpServer(runner, settings) {
   );
 
   server.registerTool(
+    "ask_claude_code_parallel",
+    {
+      title: `Ask Claude Code several things at once on ${owner}`,
+      description: `Starts several independent requests at the same time, each in its own Claude Code session on ${owner}. Use it when the user asks for several unrelated things (for example email, Trello and analytics): it is much faster than calling ask_claude_code several times, because the Claude app runs tool calls one after the other. Waits up to ${Math.round(WAIT_MS / 1000)} s, returns the answers already finished and the task ids still running; then call get_task_result with those ids, report each new answer as it arrives, and finish with a short overall summary. Same consent rule as ask_claude_code for anything that sends, publishes, deletes or changes something.`,
+      inputSchema: {
+        requests: z.array(z.string().min(1)).min(2).max(MAX_RUNNING).describe(`2 to ${MAX_RUNNING} complete, independent requests, each with all useful context.`),
+      },
+    },
+    async ({ requests }) => {
+      if (runner.freeSlots() < requests.length) {
+        throw new Error(`Only ${runner.freeSlots()} task slot(s) free: fetch running tasks with get_task_result first, or send fewer requests.`);
+      }
+      const list = requests.map((request) => runner.start(request));
+      return text(describeMany(await runner.waitMany(list)));
+    },
+  );
+
+  server.registerTool(
     "get_task_result",
     {
-      title: "Get a Claude Code task result",
-      description: "Fetches the result of a Claude Code task that was still running (id given by ask_claude_code).",
-      inputSchema: { task_id: z.string().describe("Task id, for example a1b2c3.") },
+      title: "Get Claude Code task results",
+      description: `Fetches the results of Claude Code tasks that were still running (ids given by ask_claude_code or ask_claude_code_parallel). With several ids, it returns as soon as one more task finishes (or after ${Math.round(WAIT_MS / 1000)} s), so you can report answers as they arrive and call it again for the rest.`,
+      inputSchema: {
+        task_id: z.string().optional().describe("One task id, for example a1b2c3."),
+        task_ids: z.array(z.string()).optional().describe("Several task ids."),
+      },
       annotations: { readOnlyHint: true },
     },
-    async ({ task_id }) => {
-      const task = runner.get(task_id);
-      return text(task ? describe(await runner.wait(task)) : "Unknown task: it may have finished more than 24 hours ago, or the service restarted.");
+    async ({ task_id, task_ids }) => {
+      const ids = [...new Set([...(task_ids || []), ...(task_id ? [task_id] : [])])];
+      if (!ids.length) throw new Error("Give task_id or task_ids.");
+      const unknown = "Unknown task: it may have finished more than 24 hours ago, or the service restarted.";
+      const list = ids.map((id) => runner.get(id)).filter(Boolean);
+      if (ids.length === 1) return text(list[0] ? describe(await runner.wait(list[0])) : unknown);
+      await runner.waitMany(list, { any: true });
+      const missing = ids.filter((id) => !runner.get(id)).map((id) => `Task ${id}: ${unknown}`);
+      return text([list.length ? describeMany(list) : "", ...missing].filter(Boolean).join("\n\n"));
     },
   );
 
