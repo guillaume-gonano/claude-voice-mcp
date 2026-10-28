@@ -90,6 +90,7 @@ The password is asked only once, when you add the connector. Five wrong tries lo
 | `userName` | Your first name, used in the prompts. |
 | `toolsHint` | What Claude Code can reach on your Mac. The voice assistant reads it to decide when to call the tool. |
 | `extraPrompt` | Extra instructions appended to the voice system prompt (language, house rules). |
+| `allowedTools` | Optional Claude Code permission rules run without confirmation, for example `["Bash(kite send:*)"]` to let voice requests send email. Auto mode otherwise blocks such actions, since nobody is at the Mac to approve them. Each rule widens what a prompt injection could do. An `ask` or `deny` rule in your own Claude Code settings still wins. |
 
 The installer adds `publicUrl`, `port`, and either `access` (Cloudflare) or `password` (other tunnels; at least 16 characters).
 

@@ -72,6 +72,14 @@ try {
   const answer = await mcp.callTool({ name: "ask_claude_code", arguments: { request: "What time is it?" } });
   assert.match(answer.content[0].text, /It is noon\.[\s\S]*sess-1/);
 
+  // Allowed tools are passed to Claude Code as permission rules.
+  const argsFile = path.join(tmp, "args.txt");
+  const echoClaude = path.join(tmp, "claude-args");
+  fs.writeFileSync(echoClaude, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\necho '{"result":"ok","session_id":"s"}'\n`, { mode: 0o755 });
+  const echoRunner = createTaskRunner({ bin: echoClaude, allowedTools: ["Bash(kite send:*)"] });
+  await echoRunner.wait(echoRunner.start("send it"), 5000);
+  assert.match(fs.readFileSync(argsFile, "utf8"), /--allowedTools\nBash\(kite send:\*\)\n/);
+
   // Long task: "running" answer, then the result via get_task_result.
   process.env.FAKE_SLEEP = "2";
   const slowRunner = createTaskRunner({ bin: fakeClaude });

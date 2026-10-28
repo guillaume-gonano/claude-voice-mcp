@@ -45,6 +45,8 @@ export function resolveSettings(config = {}) {
     userName: config.userName || "",
     toolsHint: config.toolsHint || "its files, command-line tools and MCP servers",
     extraPrompt: config.extraPrompt || "",
+    // Claude Code permission rules allowed without confirmation, e.g. "Bash(kite send:*)".
+    allowedTools: Array.isArray(config.allowedTools) ? config.allowedTools : [],
   };
 }
 
@@ -226,7 +228,7 @@ export function passwordGuard(password) {
 
 // --- Claude Code tasks ---
 
-export function createTaskRunner({ bin = CLAUDE_BIN, prompt = voicePrompt(resolveSettings()), args: extraArgs = [] } = {}) {
+export function createTaskRunner({ bin = CLAUDE_BIN, prompt = voicePrompt(resolveSettings()), allowedTools = [], args: extraArgs = [] } = {}) {
   const tasks = new Map();
   const running = () => [...tasks.values()].filter((task) => task.status === "running");
 
@@ -236,6 +238,7 @@ export function createTaskRunner({ bin = CLAUDE_BIN, prompt = voicePrompt(resolv
       throw new Error(`${busy.length} tasks are already running (${busy.map((task) => task.id).join(", ")}): fetch one with get_task_result, then try again.`);
     }
     const args = ["-p", request, "--model", CLAUDE_MODEL, "--effort", CLAUDE_EFFORT, "--permission-mode", "auto", "--output-format", "json", "--append-system-prompt", prompt, ...extraArgs];
+    if (allowedTools.length) args.push("--allowedTools", ...allowedTools);
     if (sessionId) args.push("--resume", sessionId);
     const task = { id: crypto.randomBytes(3).toString("hex"), status: "running", startedAt: Date.now() };
     const child = spawn(bin, args, { cwd: HOME, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
@@ -368,7 +371,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     publicUrl: config.publicUrl,
     provider: createOAuthProvider(path.join(DATA, "oauth-state.json")),
     guard: config.access?.aud ? accessGuard(createAccessVerifier(config.access)) : passwordGuard(config.password),
-    runner: createTaskRunner({ prompt: voicePrompt(settings) }),
+    runner: createTaskRunner({ prompt: voicePrompt(settings), allowedTools: settings.allowedTools }),
     settings,
   });
   app.listen(port, "127.0.0.1", () => console.log(`Voice MCP ready on 127.0.0.1:${port} (${config.publicUrl}/mcp)`));
