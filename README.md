@@ -21,7 +21,7 @@ Claude app (voice) ──HTTPS──▶ tunnel (Cloudflare, Tailscale, ngrok…)
 - Requests go through a tunnel: no port is opened on your Mac or router.
 - Each request runs `claude -p` with Sonnet, low effort and `--permission-mode auto`, plus a system prompt that asks for one to four plain sentences.
 - Follow-up questions resume the same Claude Code session (`session_id`).
-- Requests longer than about 50 seconds return a task id; the voice assistant fetches the result later.
+- Requests longer than about 25 seconds return a task id; the voice assistant fetches the result with `get_task_result`.
 
 ### Tools
 
@@ -93,7 +93,7 @@ The password is asked only once, when you add the connector. Five wrong tries lo
 
 The installer adds `publicUrl`, `port`, and either `access` (Cloudflare) or `password` (other tunnels; at least 16 characters).
 
-Environment variables: `CLAUDE_BIN`, `VOICE_MCP_MODEL` (default `sonnet`), `VOICE_MCP_EFFORT` (default `low`) and `VOICE_MCP_WAIT_MS` (default `50000`).
+Environment variables: `CLAUDE_BIN`, `VOICE_MCP_MODEL` (default `sonnet`), `VOICE_MCP_EFFORT` (default `low`) and `VOICE_MCP_WAIT_MS` (default `25000`: the Claude app gives up on a tool call after about 40 s, so longer requests return a task id) and `VOICE_MCP_MAX_RUNNING` (default `3` parallel tasks).
 
 ## Security
 
