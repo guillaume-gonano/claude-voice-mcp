@@ -318,14 +318,16 @@ function createMcpServer(runner, settings) {
   const owner = settings.userName ? `${settings.userName}'s Mac` : "the user's Mac";
   const server = new McpServer({ name: "claude-voice-mcp", version: "1.0.0" });
   const text = (value) => ({ content: [{ type: "text", text: value }] });
+  // Voice transcripts get paraphrased on the way: ask the assistant to keep the user's own words.
+  const requestRule = "Write it in the user's language, keeping their own words, names, numbers and dates exactly; fix only obvious dictation errors, add no action and no restriction they did not ask for. If a name or word is unclear, ask the user first. Claude Code does not see this conversation: add the context it needs (who or what is meant). For an action the user confirmed, say so explicitly with the exact text to send.";
 
   server.registerTool(
     "ask_claude_code",
     {
       title: `Ask Claude Code on ${owner}`,
-      description: `Hands a request to Claude Code running on ${owner}, which has access to ${settings.toolsHint}. Returns a short answer ready to be read aloud. Before calling, if the request sends, publishes, deletes or changes something, restate it to the user and wait for their consent. For a follow-up question, pass the session_id from the previous answer. For several independent requests, use ask_claude_code_parallel instead.`,
+      description: `Hands a request to Claude Code running on ${owner}, which has access to ${settings.toolsHint}. Returns a short answer ready to be read aloud: report it faithfully, and never say something is done before it comes back. Before calling, if the request sends, publishes, deletes or changes something, restate it to the user and wait for their consent. For a follow-up question, pass the session_id from the previous answer. For several independent requests, use ask_claude_code_parallel instead.`,
       inputSchema: {
-        request: z.string().min(1).describe("The complete request, with all useful context."),
+        request: z.string().min(1).describe(`The complete request. ${requestRule}`),
         session_id: z.string().optional().describe("session_id from a previous answer, to continue the same conversation."),
       },
     },
@@ -338,7 +340,7 @@ function createMcpServer(runner, settings) {
       title: `Ask Claude Code several things at once on ${owner}`,
       description: `Starts several independent requests at the same time, each in its own Claude Code session on ${owner}. Use it when the user asks for several unrelated things (for example email, Trello and analytics): it is much faster than calling ask_claude_code several times, because the Claude app runs tool calls one after the other. Waits up to ${Math.round(WAIT_MS / 1000)} s, returns the answers already finished and the task ids still running; then call get_task_result with those ids, report each new answer as it arrives, and finish with a short overall summary. Same consent rule as ask_claude_code for anything that sends, publishes, deletes or changes something.`,
       inputSchema: {
-        requests: z.array(z.string().min(1)).min(2).max(MAX_RUNNING).describe(`2 to ${MAX_RUNNING} complete, independent requests, each with all useful context.`),
+        requests: z.array(z.string().min(1)).min(2).max(MAX_RUNNING).describe(`2 to ${MAX_RUNNING} complete, independent requests. ${requestRule}`),
       },
     },
     async ({ requests }) => {
