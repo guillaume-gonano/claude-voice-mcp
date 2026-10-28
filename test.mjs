@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import { createApp, createOAuthProvider, createTaskRunner, resolveSettings } from "./server.mjs";
+import { accessGuard, createApp, createOAuthProvider, createTaskRunner, passwordGuard, resolveSettings } from "./server.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "voice-mcp-"));
 const fakeClaude = path.join(tmp, "claude");
@@ -17,7 +17,7 @@ const base = `http://127.0.0.1:${port}`;
 const provider = createOAuthProvider(path.join(tmp, "state.json"));
 let accessOk = false;
 const settings = resolveSettings({ userName: "Alex" });
-const app = createApp({ publicUrl: base, provider, verifyAccess: async () => accessOk, runner: createTaskRunner({ bin: fakeClaude }), settings });
+const app = createApp({ publicUrl: base, provider, guard: accessGuard(async () => accessOk), runner: createTaskRunner({ bin: fakeClaude }), settings });
 const httpServer = app.listen(port, "127.0.0.1");
 await new Promise((resolve) => httpServer.once("listening", resolve));
 
@@ -81,7 +81,32 @@ try {
   assert.equal(slow.status, "done");
 
   await mcp.close();
-  console.log("OK: OAuth, Access guard and tools");
+
+  // Password mode (any tunnel): form, wrong password, right password, then lock after five failures.
+  assert.throws(() => passwordGuard("short"));
+  const password = "correct horse battery staple";
+  const pwApp = createApp({ publicUrl: `http://127.0.0.1:${port + 1}`, provider, guard: passwordGuard(password), runner: createTaskRunner({ bin: fakeClaude }), settings });
+  const pwServer = pwApp.listen(port + 1, "127.0.0.1");
+  await new Promise((resolve) => pwServer.once("listening", resolve));
+  try {
+    const pwBase = `http://127.0.0.1:${port + 1}`;
+    const params = { response_type: "code", client_id: client.client_id, redirect_uri: redirectUri, code_challenge: challenge, code_challenge_method: "S256", state: "pw" };
+    const form = await fetch(`${pwBase}/authorize?${new URLSearchParams(params)}`, { redirect: "manual" });
+    assert.equal(form.status, 200);
+    const html = await form.text();
+    assert.match(html, /type="password"/);
+    assert.match(html, new RegExp(`name="client_id" value="${client.client_id}"`));
+    const submit = (pw) => fetch(`${pwBase}/authorize`, { method: "POST", redirect: "manual", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ ...params, password: pw }) });
+    assert.equal((await submit("wrong password, long enough")).status, 401);
+    const ok = await submit(password);
+    assert.equal(ok.status, 302);
+    assert.equal(new URL(ok.headers.get("location")).searchParams.get("state"), "pw");
+    for (let i = 0; i < 5; i++) await submit("still the wrong password");
+    assert.equal((await submit(password)).status, 429);
+  } finally {
+    pwServer.close();
+  }
+  console.log("OK: OAuth, Access and password guards, tools");
 } finally {
   httpServer.close();
   fs.rmSync(tmp, { recursive: true, force: true });

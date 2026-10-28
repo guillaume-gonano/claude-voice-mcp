@@ -151,7 +151,10 @@ export function createOAuthProvider(stateFile) {
   };
 }
 
-// --- Cloudflare Access: only the authorization page requires the owner's sign-in ---
+// --- Guarding /authorize: only the owner may connect the Claude app ---
+// Two options: Cloudflare Access (strongest), or a password for any other tunnel.
+
+// Cloudflare Access: the server also checks the JWT signature, audience and email itself.
 
 export function createAccessVerifier({ team, aud, email }) {
   const issuer = `https://${team}.cloudflareaccess.com`;
@@ -166,6 +169,56 @@ export function createAccessVerifier({ team, aud, email }) {
       return false;
     }
   };
+}
+
+export function accessGuard(verify) {
+  return async (req, res, next) => {
+    if (await verify(req)) return next();
+    res.status(403).send("Access denied: Cloudflare Access sign-in required.");
+  };
+}
+
+const MIN_PASSWORD_LENGTH = 16;
+const MAX_FAILURES = 5;
+const LOCK_MS = 15 * 60_000;
+const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+function passwordPage(action, params, failed) {
+  const hidden = Object.entries(params)
+    .filter(([key]) => key !== "password")
+    .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
+    .join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Connect Claude</title>
+<style>body{font:16px system-ui,sans-serif;max-width:22rem;margin:15vh auto;padding:0 1rem}input,button{font:inherit;width:100%;box-sizing:border-box;padding:.7rem;margin-top:.6rem}p.error{color:#b00020}</style></head>
+<body><h1>Connect Claude to this Mac</h1>${failed ? '<p class="error">Wrong password.</p>' : ""}
+<form method="post" action="${escapeHtml(action)}">${hidden}<input type="password" name="password" autocomplete="current-password" placeholder="Password" required autofocus><button>Allow</button></form></body></html>`;
+}
+
+// Password: shown once, when the connector is added in the Claude app. Five wrong tries lock it for 15 minutes.
+export function passwordGuard(password) {
+  if (typeof password !== "string" || password.length < MIN_PASSWORD_LENGTH) throw new Error(`The password must be at least ${MIN_PASSWORD_LENGTH} characters long.`);
+  const expected = Buffer.from(hash(password), "hex");
+  const parseForm = express.urlencoded({ extended: false });
+  let failures = 0;
+  let lockedUntil = 0;
+  return (req, res, next) =>
+    parseForm(req, res, () => {
+      if (Date.now() < lockedUntil) return res.status(429).send("Too many wrong passwords: try again in 15 minutes.");
+      const given = req.method === "POST" ? req.body?.password : undefined;
+      if (typeof given === "string") {
+        if (crypto.timingSafeEqual(Buffer.from(hash(given), "hex"), expected)) {
+          failures = 0;
+          delete req.body.password;
+          return next();
+        }
+        if (++failures >= MAX_FAILURES) {
+          failures = 0;
+          lockedUntil = Date.now() + LOCK_MS;
+        }
+      }
+      const params = req.method === "POST" ? req.body || {} : req.query;
+      res.status(given === undefined ? 200 : 401).type("html").send(passwordPage(req.baseUrl, params, given !== undefined));
+    });
 }
 
 // --- Claude Code tasks ---
@@ -267,16 +320,13 @@ function createMcpServer(runner, settings) {
 
 // --- HTTP app ---
 
-export function createApp({ publicUrl, provider, verifyAccess, runner, settings = resolveSettings() }) {
+export function createApp({ publicUrl, provider, guard, runner, settings = resolveSettings() }) {
   const app = express();
   app.set("trust proxy", "loopback");
   const issuerUrl = new URL(publicUrl);
   const mcpUrl = new URL("/mcp", issuerUrl);
 
-  app.use("/authorize", async (req, res, next) => {
-    if (await verifyAccess(req)) return next();
-    res.status(403).send("Access denied: Cloudflare Access sign-in required.");
-  });
+  app.use("/authorize", guard);
   app.use(mcpAuthRouter({ provider, issuerUrl, resourceServerUrl: mcpUrl, resourceName: "Claude Code (voice)", scopesSupported: ["mcp"] }));
 
   const auth = requireBearerAuth({ verifier: provider, resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(mcpUrl) });
@@ -298,8 +348,8 @@ export function createApp({ publicUrl, provider, verifyAccess, runner, settings 
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = readJson(path.join(DATA, "config.json"), null);
-  if (!config?.publicUrl || !config?.access?.aud) {
-    console.error("Missing data/config.json: publicUrl and access { team, aud, email } are required (see config.example.json).");
+  if (!config?.publicUrl || !(config.access?.aud || config.password)) {
+    console.error("Incomplete data/config.json: publicUrl and either access { team, aud, email } or password are required (see README).");
     process.exit(1);
   }
   const port = Number(config.port || 47851);
@@ -307,7 +357,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const app = createApp({
     publicUrl: config.publicUrl,
     provider: createOAuthProvider(path.join(DATA, "oauth-state.json")),
-    verifyAccess: createAccessVerifier(config.access),
+    guard: config.access?.aud ? accessGuard(createAccessVerifier(config.access)) : passwordGuard(config.password),
     runner: createTaskRunner({ prompt: voicePrompt(settings) }),
     settings,
   });

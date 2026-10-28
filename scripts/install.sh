@@ -1,6 +1,8 @@
 #!/bin/bash
-# Publishes the voice MCP: tunnel DNS record, Cloudflare Access on /authorize,
-# local config and auto-start services (macOS LaunchAgents).
+# Publishes the voice MCP. Two modes (TUNNEL in data/install.env):
+# - cloudflare: DNS record, Cloudflare Access on /authorize, cloudflared service;
+# - other: your own tunnel (Tailscale Funnel, ngrok…), /authorize protected by a password.
+# Then: local config and auto-start services (macOS LaunchAgents).
 # Safe to re-run: every step first checks what already exists.
 # Settings come from data/install.env (see install.env.example).
 set -euo pipefail
@@ -10,10 +12,17 @@ P="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$P/data/install.env" ] || { echo "Missing data/install.env: copy install.env.example and fill it in."; exit 1; }
 # shellcheck source=/dev/null
 . "$P/data/install.env"
-: "${HOST:?} ${ZONE:?} ${TUNNEL_ID:?} ${ACCESS_TEAM:?} ${ACCESS_EMAIL:?}"
+TUNNEL="${TUNNEL:-cloudflare}"
+: "${HOST:?}"
 LABEL="${LABEL:-local.claude-voice-mcp}"
 PORT="${PORT:-47851}"
 LA="$HOME/Library/LaunchAgents"
+CONFIG="$P/data/config.json"
+mkdir -p "$P/data" "$P/run"
+[ -f "$CONFIG" ] || cp "$P/config.example.json" "$CONFIG"
+
+if [ "$TUNNEL" = "cloudflare" ]; then
+: "${ZONE:?} ${TUNNEL_ID:?} ${ACCESS_TEAM:?} ${ACCESS_EMAIL:?}"
 [ -f "$P/data/tunnel-token" ] || { echo "Missing data/tunnel-token (tunnel token from the Cloudflare dashboard)."; exit 1; }
 
 echo "1/4 DNS $HOST → tunnel"
@@ -39,17 +48,28 @@ fi
 echo "   AUD read"
 
 echo "3/4 Local config"
-mkdir -p "$P/data" "$P/run"
-# Keeps the personal settings already in config.json (userName, notesDir…).
-CONFIG="$P/data/config.json"
-[ -f "$CONFIG" ] || cp "$P/config.example.json" "$CONFIG"
+# Keeps the personal settings already in config.json (userName, toolsHint…).
 jq --arg url "https://$HOST" --argjson port "$PORT" --arg team "$ACCESS_TEAM" --arg aud "$AUD" --arg email "$ACCESS_EMAIL" \
   '.publicUrl = $url | .port = $port | .access = {team: $team, aud: $aud, email: $email}' "$CONFIG" > "$CONFIG.tmp"
 mv "$CONFIG.tmp" "$CONFIG"
 
+elif [ "$TUNNEL" = "other" ]; then
+echo "1-3/4 Local config (your own tunnel must forward https://$HOST to http://127.0.0.1:$PORT)"
+NEW_PASSWORD=""
+if [ "$(jq -r '.password // empty' "$CONFIG")" = "" ]; then
+  NEW_PASSWORD="$(openssl rand -base64 24 | tr -d '/+=' | cut -c1-24)"
+fi
+jq --arg url "https://$HOST" --argjson port "$PORT" --arg pw "$NEW_PASSWORD" \
+  '.publicUrl = $url | .port = $port | del(.access) | if $pw != "" then .password = $pw else . end' "$CONFIG" > "$CONFIG.tmp"
+mv "$CONFIG.tmp" "$CONFIG"
+
+else
+  echo "TUNNEL must be cloudflare or other"; exit 1
+fi
+
 echo "4/4 Auto-start services"
 NODE="$(command -v node)"
-CLOUDFLARED="$(command -v cloudflared)"
+CLOUDFLARED="$(command -v cloudflared || true)"
 write_agent() { # label, arguments as XML
   cat > "$LA/$1.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -72,17 +92,22 @@ EOF
   launchctl bootstrap "gui/$(id -u)" "$LA/$1.plist"
 }
 write_agent "$LABEL" "<string>$NODE</string><string>$P/server.mjs</string>"
-write_agent "$LABEL-tunnel" "<string>$CLOUDFLARED</string><string>tunnel</string><string>--no-autoupdate</string><string>run</string><string>--token-file</string><string>$P/data/tunnel-token</string>"
+[ "$TUNNEL" = "cloudflare" ] && write_agent "$LABEL-tunnel" "<string>$CLOUDFLARED</string><string>tunnel</string><string>--no-autoupdate</string><string>run</string><string>--token-file</string><string>$P/data/tunnel-token</string>"
 
 sleep 5
 echo "Checks:"
 curl -fsS "http://127.0.0.1:$PORT/health" && echo "   local server OK"
 curl -sS -o /dev/null -w "   public /mcp without a token → %{http_code} (expected 401)\n" -X POST "https://$HOST/mcp"
-# A new Access application can take one or two minutes to apply.
-for _ in $(seq 12); do
-  code="$(curl -sS -o /dev/null -w "%{http_code}" "https://$HOST/authorize")"
-  [ "$code" = "302" ] && break
-  sleep 10
-done
-echo "   public /authorize → $code (expected 302 to Cloudflare Access)"
+if [ "$TUNNEL" = "cloudflare" ]; then
+  # A new Access application can take one or two minutes to apply.
+  for _ in $(seq 12); do
+    code="$(curl -sS -o /dev/null -w "%{http_code}" "https://$HOST/authorize")"
+    [ "$code" = "302" ] && break
+    sleep 10
+  done
+  echo "   public /authorize → $code (expected 302 to Cloudflare Access)"
+else
+  curl -sS -o /dev/null -w "   public /authorize → %{http_code} (expected 200, the password page)\n" "https://$HOST/authorize"
+  [ -n "$NEW_PASSWORD" ] && echo "Password to type when connecting the Claude app (also in data/config.json): $NEW_PASSWORD"
+fi
 echo "Connector URL to add in Claude: https://$HOST/mcp"
