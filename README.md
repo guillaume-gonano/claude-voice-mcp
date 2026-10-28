@@ -1,5 +1,7 @@
 # claude-voice-mcp
 
+<p align="center"><img src="docs/cover.png" alt="Talk to your Mac from Claude voice mode: the phone's voice assistant reaches Claude Code on the Mac through MCP over HTTPS" width="420"></p>
+
 Talk to **Claude Code on your Mac** while you drive, walk or cook, using the **voice mode of the Claude mobile app**.
 
 The Claude app's voice mode can only use remote connectors (MCP servers reachable by URL). This small server is such a connector: it hands each spoken request to Claude Code running headless on your Mac, which keeps access to everything it normally has (local files, notes, CLIs, MCP servers, skills), and sends back a short answer written to be read aloud.
