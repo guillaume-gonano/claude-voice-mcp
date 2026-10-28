@@ -42,7 +42,7 @@ Claude app (voice) ──HTTPS──▶ Cloudflare ──tunnel──▶ this se
 
 1. **Install**
    ```bash
-   git clone https://github.com/<you>/claude-voice-mcp && cd claude-voice-mcp
+   git clone https://github.com/guillaume-gonano/claude-voice-mcp && cd claude-voice-mcp
    npm install && npm test
    ```
 2. **Create the tunnel** in Cloudflare Zero Trust → Networks → Tunnels: a remotely managed tunnel with a public hostname (for example `mcp.example.com`) pointing to `http://127.0.0.1:47851`. Save its token in `data/tunnel-token` (`chmod 600`).
